@@ -1,0 +1,177 @@
+name: Benchmark Rust CI
+
+on:
+  workflow_dispatch:
+    inputs:
+      run_github_hosted:
+        description: Run the GitHub-hosted Linux and Windows baselines
+        required: true
+        default: true
+        type: boolean
+      run_runs_on:
+        description: Run all four RunsOn Linux and Windows configurations
+        required: true
+        default: true
+        type: boolean
+      cache_backend:
+        description: Cache used by RunsOn (GitHub-hosted uses GitHub cache when enabled)
+        required: true
+        default: none
+        type: choice
+        options:
+          - none
+          - s3
+          - sticky
+      cache_generation:
+        description: Change this value to force a cold cache
+        required: true
+        default: v1
+        type: string
+      spot:
+        description: Use Spot instances for RunsOn jobs
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_FEATURES: "rodio-backend,media-control,image,notify,fzf"
+
+jobs:
+  runs-on:
+    if: ${{ inputs.run_runs_on }}
+    name: RunsOn ${{ matrix.platform }}, ${{ matrix.size }} (${{ inputs.cache_backend }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux-2cpu
+            platform: Linux
+            size: 2 vCPU / 8 GB
+            family: m8azn.large
+            image: ubuntu24-full-x64
+          - id: linux-4cpu
+            platform: Linux
+            size: 4 vCPU / 16 GB
+            family: m8azn.xlarge
+            image: ubuntu24-full-x64
+          - id: windows-2cpu
+            platform: Windows
+            size: 2 vCPU / 8 GB
+            family: m8azn.large
+            image: windows25-full-x64
+          - id: windows-4cpu
+            platform: Windows
+            size: 4 vCPU / 16 GB
+            family: m8azn.xlarge
+            image: windows25-full-x64
+
+    runs-on: runs-on=${{ github.run_id }}-${{ matrix.id }}/family=${{ matrix.family }}/image=${{ matrix.image }}/${{ inputs.cache_backend == 's3' && 'extras=s3-cache' || inputs.cache_backend == 'sticky' && format('sticky=spotify-{0}-{1}:20gb:gp3:300mibps:3000iops:lazy-init', matrix.id, inputs.cache_generation) || 'ssh=false' }}/spot=${{ inputs.spot }}/env=demo
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Set up RunsOn S3 cache
+        if: ${{ inputs.cache_backend == 's3' }}
+        uses: runs-on/action@v2
+
+      - name: Set up RunsOn sticky cache
+        if: ${{ inputs.cache_backend == 'sticky' }}
+        uses: runs-on/action@v2
+        with:
+          sticky_cache: |
+            rust
+            custom,path=target
+
+      - name: Install Linux dependencies
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install libssl-dev libasound2-dev libdbus-1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        id: install_toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache Cargo dependencies and build output
+        if: ${{ inputs.cache_backend == 's3' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: spotify-${{ matrix.id }}-${{ inputs.cache_generation }}-rustc-${{ steps.install_toolchain.outputs.cachekey }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cargo format
+        run: cargo fmt --all -- --check
+
+      - name: Cargo test
+        run: cargo test --no-default-features --features ${{ env.RUST_FEATURES }}
+
+      - name: Cargo clippy with all features
+        run: cargo clippy --no-default-features --features ${{ env.RUST_FEATURES }} -- -D warnings
+
+      - name: Cargo clippy without features
+        run: cargo clippy --no-default-features -- -D warnings
+
+  github-hosted:
+    if: ${{ inputs.run_github_hosted }}
+    name: GitHub-hosted ${{ matrix.platform }} (${{ inputs.cache_backend == 'none' && 'no cache' || 'GitHub cache' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: linux
+            platform: Linux
+            runner: ubuntu-24.04
+          - id: windows
+            platform: Windows
+            runner: windows-2025
+
+    runs-on: ${{ matrix.runner }}
+
+    steps:
+      - name: Checkout source
+        uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: ${{ runner.os == 'Linux' }}
+        run: sudo apt-get update && sudo apt-get install libssl-dev libasound2-dev libdbus-1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+
+      - name: Install Rust toolchain
+        id: install_toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+          components: clippy, rustfmt
+
+      - name: Cache Cargo dependencies and build output
+        if: ${{ inputs.cache_backend != 'none' }}
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+          key: spotify-${{ matrix.id }}-${{ inputs.cache_generation }}-rustc-${{ steps.install_toolchain.outputs.cachekey }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+
+      - name: Cargo format
+        run: cargo fmt --all -- --check
+
+      - name: Cargo test
+        run: cargo test --no-default-features --features ${{ env.RUST_FEATURES }}
+
+      - name: Cargo clippy with all features
+        run: cargo clippy --no-default-features --features ${{ env.RUST_FEATURES }} -- -D warnings
+
+      - name: Cargo clippy without features
+        run: cargo clippy --no-default-features -- -D warnings
