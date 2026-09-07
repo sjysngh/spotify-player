@@ -23,33 +23,69 @@ env:
 
 jobs:
   runs-on:
-    name: RunsOn ${{ matrix.platform }}, ${{ matrix.size }} (${{ inputs.cache_backend }})
+    name: RunsOn ${{ matrix.platform }}, ${{ matrix.size }}, ${{ matrix.market }} (${{ inputs.cache_backend }})
     strategy:
       fail-fast: false
       matrix:
         include:
-          - id: linux-2cpu
+          - id: linux-2cpu-spot
             platform: Linux
             size: 2 vCPU / 8 GB
+            market: Spot
+            spot: true
             family: m8azn.large
             image: ubuntu24-full-x64
-          - id: linux-4cpu
+          - id: linux-2cpu-ondemand
+            platform: Linux
+            size: 2 vCPU / 8 GB
+            market: On-demand
+            spot: false
+            family: m8azn.large
+            image: ubuntu24-full-x64
+          - id: linux-4cpu-spot
             platform: Linux
             size: 4 vCPU / 16 GB
+            market: Spot
+            spot: true
             family: m8azn.xlarge
             image: ubuntu24-full-x64
-          - id: windows-2cpu
+          - id: linux-4cpu-ondemand
+            platform: Linux
+            size: 4 vCPU / 16 GB
+            market: On-demand
+            spot: false
+            family: m8azn.xlarge
+            image: ubuntu24-full-x64
+          - id: windows-2cpu-spot
             platform: Windows
             size: 2 vCPU / 8 GB
+            market: Spot
+            spot: true
             family: m8azn.large
             image: windows25-full-x64
-          - id: windows-4cpu
+          - id: windows-2cpu-ondemand
+            platform: Windows
+            size: 2 vCPU / 8 GB
+            market: On-demand
+            spot: false
+            family: m8azn.large
+            image: windows25-full-x64
+          - id: windows-4cpu-spot
             platform: Windows
             size: 4 vCPU / 16 GB
+            market: Spot
+            spot: true
+            family: m8azn.xlarge
+            image: windows25-full-x64
+          - id: windows-4cpu-ondemand
+            platform: Windows
+            size: 4 vCPU / 16 GB
+            market: On-demand
+            spot: false
             family: m8azn.xlarge
             image: windows25-full-x64
 
-    runs-on: runs-on=${{ github.run_id }}-${{ matrix.id }}/family=${{ matrix.family }}/image=${{ matrix.image }}/${{ inputs.cache_backend == 's3' && 'extras=s3-cache' || inputs.cache_backend == 'sticky' && format('sticky=spotify-{0}:20gb:gp3:300mibps:3000iops:lazy-init', matrix.id) || 'ssh=false' }}/spot=false/env=demo
+    runs-on: runs-on=${{ github.run_id }}-${{ matrix.id }}/family=${{ matrix.family }}/image=${{ matrix.image }}/${{ inputs.cache_backend == 's3' && 'extras=s3-cache' || inputs.cache_backend == 'sticky' && format('sticky=spotify-{0}:20gb:gp3:300mibps:3000iops:lazy-init', matrix.id) || 'ssh=false' }}/spot=${{ matrix.spot }}/env=demo
 
     steps:
       - name: Checkout source
