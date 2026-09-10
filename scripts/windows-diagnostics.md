@@ -63,3 +63,23 @@ The first diagnostic revision produced only 5–6 counter samples per job, all
 before Cargo started. Its Cargo timings are usable, but its system/process
 counters cannot explain the slow phases. After updating, run `measure` once
 using the existing seed caches to verify full counter coverage before repeating.
+
+## Background update comparison
+
+`Diagnose Windows Update Impact` runs two fresh 2-CPU on-demand Windows jobs in
+parallel: `control` and `suppressed`. Both restore the existing 2-CPU diagnostic
+cache and never save it. The treatment defers Windows/Edge automatic updating,
+disables matching scheduled tasks and requests update services to stop. These
+settings exist only on the disposable experiment runner. Operation failures and
+before/after service/process state are saved alongside the counters; verify that
+updates actually stayed quiet before interpreting the treatment.
+
+Parallel jobs avoid the boot-age confound observed in the earlier sequential
+matrix: both machines launched together, but the second job started much later.
+Boot/launch timestamps are recorded in `updates-before.json` and
+`updates-after.json`. This is a combined OS/browser update experiment, so an
+improvement cannot identify an individual updater without further isolation.
+
+Policy references:
+- https://learn.microsoft.com/en-us/windows/deployment/update/waas-wu-settings
+- https://learn.microsoft.com/en-us/deployedge/microsoft-edge-update-policies
