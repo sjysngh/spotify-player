@@ -39,16 +39,18 @@ points to a cause, change one relevant setting and repeat the comparison.
 
 ## Artifacts
 
-- `machine.json`: CPU, RAM, initial pagefile usage, antivirus status and revision.
+- `<phase>/machine.json`: CPU, RAM, initial pagefile usage, antivirus status and revision.
 - `phases.jsonl`, `durations.jsonl`: UTC phase boundaries and command elapsed times/exit codes.
-- `counters.jsonl`: system counters sampled roughly once a second; disk latency is in seconds.
-- `processes.jsonl`: process CPU, I/O rates and private working set roughly every five seconds.
+- `<phase>/counters.jsonl`: system counters sampled roughly once a second; disk latency is in seconds.
+- `<phase>/processes.jsonl`: process CPU, I/O rates and private working set roughly every five seconds.
 - `*.log`: Cargo output, including fingerprint messages explaining rebuilds.
 - `*-timings/`: Cargo HTML reports for test and both Clippy commands.
 - Collector/error logs: check these if samples are missing or incomplete.
 
-Collection begins before cache restore and ends after Cargo checks. Process
-snapshots can miss short-lived processes. Instrumentation itself adds overhead,
+Collection now starts and stops inside each Cargo step, keeping its parent process
+alive. Each step requires a counter sample after Cargo finishes and fails if
+collection ended early. Cache restore timing remains in the Actions step log.
+Process snapshots can miss short-lived processes. Instrumentation itself adds overhead,
 so use these runs for diagnosis, not blog timing averages. Security settings are
 only read, never changed. Logs expire after seven days.
 
@@ -56,3 +58,8 @@ References: [original slow run](https://github.com/sjysngh/spotify-player/action
 [Windows performance counters](https://learn.microsoft.com/en-us/powershell/module/microsoft.powershell.diagnostics/get-counter),
 [Cargo timings](https://doc.rust-lang.org/cargo/commands/cargo-test.html),
 [Cargo rebuild diagnostics](https://doc.rust-lang.org/cargo/faq.html).
+
+The first diagnostic revision produced only 5–6 counter samples per job, all
+before Cargo started. Its Cargo timings are usable, but its system/process
+counters cannot explain the slow phases. After updating, run `measure` once
+using the existing seed caches to verify full counter coverage before repeating.

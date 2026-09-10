@@ -70,10 +70,14 @@ if ($Mode -eq 'Start') {
         Start-Sleep -Seconds 1
     }
     if (-not (Test-Path (Join-Path $Directory 'ready'))) { throw 'Counter collector produced no valid samples; inspect artifacts.' }
-    $Phase = 'cache-restore'; Mark 'start'
     exit 0
 }
 if ($Mode -eq 'Run') {
+    # Keep the collector's parent alive for the entire Cargo command.
+    # A collector launched in a separate Actions step did not survive that step.
+    $counterDirectory = Join-Path $Directory $Phase
+    & $PSCommandPath -Mode Start -Directory $counterDirectory
+    if ($LASTEXITCODE -ne 0) { throw 'Could not start the phase collector.' }
     if ($CargoArguments -contains '--timings') {
         Remove-Item 'target/cargo-timings' -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -87,11 +91,27 @@ if ($Mode -eq 'Run') {
         $code = $LASTEXITCODE
     } finally {
         $timer.Stop(); Mark 'end'
+        $commandEnded = [DateTime]::UtcNow
         @{ phase = $Phase; seconds = $timer.Elapsed.TotalSeconds; exitCode = $code } |
             ConvertTo-Json -Compress | Add-Content (Join-Path $Directory 'durations.jsonl')
         if (($CargoArguments -contains '--timings') -and (Test-Path 'target/cargo-timings')) {
             Copy-Item 'target/cargo-timings' (Join-Path $Directory "$Phase-timings") -Recurse -Force
         }
+        # Require a sample after Cargo finishes, rather than accepting a stale file.
+        $covered = $false
+        try {
+            for ($i = 0; $i -lt 10; $i++) {
+                $lastSample = Get-Content (Join-Path $counterDirectory 'counters.jsonl') -Tail 1 | ConvertFrom-Json
+                if ([DateTime]::Parse($lastSample.utc).ToUniversalTime() -ge $commandEnded) {
+                    $covered = $true
+                    break
+                }
+                Start-Sleep -Seconds 1
+            }
+        } finally {
+            & $PSCommandPath -Mode Stop -Directory $counterDirectory
+        }
+        if (-not $covered) { throw "Collector stopped before $Phase finished; inspect the diagnostic artifact." }
     }
     exit $code
 }
