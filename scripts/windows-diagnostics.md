@@ -83,3 +83,16 @@ improvement cannot identify an individual updater without further isolation.
 Policy references:
 - https://learn.microsoft.com/en-us/windows/deployment/update/waas-wu-settings
 - https://learn.microsoft.com/en-us/deployedge/microsoft-edge-update-policies
+
+## Two forced rebuilds on one runner
+
+`Diagnose Windows Repeated Rebuilds` restores the existing 2-CPU S3 cache once,
+suppresses background updates, and runs Cargo test twice on the same machine.
+Before each command it changes only `spotify_player/src/main.rs`'s modification
+time (and verifies its content hash is unchanged). Cargo timings must show that
+the app rebuilt and dependencies did not; otherwise the job fails. Incremental
+compilation is disabled for both passes. Neither pass saves the shared cache.
+
+Compare `test-first` and `test-second` timings and counters. A faster second pass
+supports a warmup/file-cache explanation but does not by itself distinguish OS
+file caching, storage initialization, and other time-since-boot effects.
