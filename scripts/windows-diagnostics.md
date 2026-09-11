@@ -96,3 +96,15 @@ compilation is disabled for both passes. Neither pass saves the shared cache.
 Compare `test-first` and `test-second` timings and counters. A faster second pass
 supports a warmup/file-cache explanation but does not by itself distinguish OS
 file caching, storage initialization, and other time-since-boot effects.
+
+## Linux versus Windows, two sizes
+
+`Compare Linux and Windows Rebuilds` launches all four configurations concurrently.
+Windows uses the existing diagnostic caches and update suppression; Linux uses
+its existing on-demand benchmark caches and normal dependency installation.
+Each job requires a cache hit, changes only the app source timestamp before each
+pass, disables Rust incremental compilation, and verifies app-only compilation.
+Linux artifacts include raw `/proc` CPU, memory, disk and VM counters once per
+second, block-device mapping, boot ID/uptime, and both Cargo timing reports.
+Compare first/second penalties within each job; the different OS setup and cache
+contents mean this is not an otherwise identical OS performance benchmark.

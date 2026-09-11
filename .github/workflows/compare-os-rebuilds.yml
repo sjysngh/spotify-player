@@ -1,0 +1,158 @@
+name: Compare Linux and Windows Rebuilds
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: compare-os-rebuilds-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_FEATURES: rodio-backend,media-control,image,notify,fzf
+
+jobs:
+  windows:
+    name: Windows ${{ matrix.cpu }} CPU repeated rebuilds
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - cpu: 2
+            family: m8azn.large
+          - cpu: 4
+            family: m8azn.xlarge
+    timeout-minutes: 30
+    runs-on: runs-on=${{ github.run_id }}-windows-${{ matrix.cpu }}-rebuilds/family=${{ matrix.family }}/image=windows25-full-x64/extras=s3-cache/spot=false/env=demo
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure update experiment
+        run: ./scripts/windows-update-experiment.ps1 -Treatment 'suppressed'
+      - name: Resolve Cargo home
+        id: cargo_home
+        shell: bash
+        run: |
+          cargo_home="$(cygpath -m "${CARGO_HOME:-$HOME/.cargo}")"
+          echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+          echo "path=$cargo_home" >> "$GITHUB_OUTPUT"
+      - uses: runs-on/action@v2
+      - name: Install Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.1'
+          components: clippy, rustfmt
+      - name: Restore diagnostic cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.cargo_home.outputs.path }}/registry/index/
+            ${{ steps.cargo_home.outputs.path }}/registry/cache/
+            ${{ steps.cargo_home.outputs.path }}/git/db/
+            target/
+          key: windows-diagnostic-v1-${{ matrix.cpu }}-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          fail-on-cache-miss: true
+      - name: Record cache state
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/windows-diagnostics" | Out-Null
+          @{ utc = [DateTime]::UtcNow.ToString('o'); phase = 'cache-restore'; event = 'end'; hit = $env:CACHE_HIT; key = $env:CACHE_KEY } |
+            ConvertTo-Json -Compress | Add-Content "$env:RUNNER_TEMP/windows-diagnostics/phases.jsonl"
+          "Cache hit: $env:CACHE_HIT (treatment: suppressed)" >> $env:GITHUB_STEP_SUMMARY
+      - name: Cargo format
+        run: ./scripts/windows-diagnostics.ps1 -Mode Run -Phase format -CargoArguments @('fmt', '--all', '--', '--check')
+      - name: First forced rebuild
+        run: ./scripts/windows-repeat-rebuild.ps1 -Phase test-first
+      - name: Second forced rebuild on the same runner
+        run: ./scripts/windows-repeat-rebuild.ps1 -Phase test-second
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-${{ matrix.cpu }}cpu-rebuilds-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-diagnostics/
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
+
+  linux:
+    name: Linux ${{ matrix.cpu }} CPU repeated rebuilds
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      max-parallel: 2
+      matrix:
+        include:
+          - cpu: 2
+            family: m8azn.large
+          - cpu: 4
+            family: m8azn.xlarge
+    runs-on: runs-on=${{ github.run_id }}-linux-${{ matrix.cpu }}-rebuilds/family=${{ matrix.family }}/image=ubuntu24-full-x64/extras=s3-cache/spot=false/env=demo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve Cargo home
+        id: cargo_home
+        run: |
+          cargo_home="${CARGO_HOME:-$HOME/.cargo}"
+          echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+          echo "path=$cargo_home" >> "$GITHUB_OUTPUT"
+      - uses: runs-on/action@v2
+      - name: Install Linux dependencies
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libasound2-dev libdbus-1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Install Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.1'
+          components: clippy, rustfmt
+      - name: Restore benchmark cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.cargo_home.outputs.path }}/registry/index/
+            ${{ steps.cargo_home.outputs.path }}/registry/cache/
+            ${{ steps.cargo_home.outputs.path }}/git/db/
+            target/
+          key: spotify-linux-${{ matrix.cpu }}cpu-ondemand-v2-rustc-${{ steps.toolchain.outputs.cachekey }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          fail-on-cache-miss: true
+      - name: Record cache state and machine
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/linux-diagnostics"
+          python3 - <<'PYCODE'
+          import json, os, platform, pathlib
+          pathlib.Path(os.environ['RUNNER_TEMP'], 'linux-diagnostics', 'machine.json').write_text(json.dumps(dict(
+              platform=platform.platform(), cacheHit=os.environ['CACHE_HIT'], cacheKey=os.environ['CACHE_KEY'],
+              launched=os.environ.get('RUNS_ON_INSTANCE_LAUNCHED_AT'), instance=os.environ.get('RUNS_ON_INSTANCE_TYPE'))))
+          PYCODE
+          lsblk -J -o NAME,TYPE,SIZE,MOUNTPOINTS > "$RUNNER_TEMP/linux-diagnostics/disks.json"
+      - name: Cargo format
+        run: cargo fmt --all -- --check
+      - name: First forced rebuild
+        run: python3 scripts/linux-repeat-rebuild.py test-first
+      - name: Second forced rebuild on the same runner
+        run: python3 scripts/linux-repeat-rebuild.py test-second
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-${{ matrix.cpu }}cpu-rebuilds-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/linux-diagnostics/
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
