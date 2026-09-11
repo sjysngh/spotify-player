@@ -1,0 +1,36 @@
+name: Benchmark Linux Five Ways
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  seed:
+    name: Seed ${{ matrix.case }}
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [github-cache, runson-cache]
+    uses: ./.github/workflows/benchmark-linux-case.yml
+    with:
+      case: ${{ matrix.case }}
+      cpu: 4
+      mode: seed
+      trial: 0
+
+  measure:
+    name: Measure ${{ matrix.case }} trial ${{ matrix.trial }}
+    needs: seed
+    strategy:
+      fail-fast: false
+      matrix:
+        case: [github-cold, runson-cold, github-cache, runson-cache, runson-image]
+        trial: [1, 2, 3]
+    uses: ./.github/workflows/benchmark-linux-case.yml
+    with:
+      case: ${{ matrix.case }}
+      cpu: 4
+      mode: measure
+      trial: ${{ matrix.trial }}
