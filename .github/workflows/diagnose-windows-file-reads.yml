@@ -1,0 +1,85 @@
+name: Diagnose Windows File Reads
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: diagnose-windows-file-reads-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_FEATURES: rodio-backend,media-control,image,notify,fzf
+
+jobs:
+  windows:
+    name: Windows 2 CPU ${{ matrix.treatment }}
+    strategy:
+      fail-fast: false
+      matrix:
+        treatment: [control, dependencies, tools]
+    timeout-minutes: 30
+    runs-on: runs-on=${{ github.run_id }}-windows-reads-${{ matrix.treatment }}/family=m8azn.large/image=windows25-full-x64/extras=s3-cache/spot=false/env=demo
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure update experiment
+        run: ./scripts/windows-update-experiment.ps1 -Treatment 'suppressed'
+      - name: Resolve Cargo home
+        id: cargo_home
+        shell: bash
+        run: |
+          cargo_home="$(cygpath -m "${CARGO_HOME:-$HOME/.cargo}")"
+          echo "CARGO_HOME=$cargo_home" >> "$GITHUB_ENV"
+          echo "path=$cargo_home" >> "$GITHUB_OUTPUT"
+      - uses: runs-on/action@v2
+      - name: Install Rust toolchain
+        id: toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.1'
+          components: clippy, rustfmt
+      - name: Restore diagnostic cache
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.cargo_home.outputs.path }}/registry/index/
+            ${{ steps.cargo_home.outputs.path }}/registry/cache/
+            ${{ steps.cargo_home.outputs.path }}/git/db/
+            target/
+          key: windows-diagnostic-v1-2-${{ steps.toolchain.outputs.cachekey }}-${{ hashFiles('**/Cargo.lock') }}
+          fail-on-cache-miss: true
+      - name: Record cache state
+        env:
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+          CACHE_KEY: ${{ steps.cache.outputs.cache-primary-key }}
+        run: |
+          New-Item -ItemType Directory -Force "$env:RUNNER_TEMP/windows-diagnostics" | Out-Null
+          @{ utc = [DateTime]::UtcNow.ToString('o'); phase = 'cache-restore'; event = 'end'; hit = $env:CACHE_HIT; key = $env:CACHE_KEY } |
+            ConvertTo-Json -Compress | Add-Content "$env:RUNNER_TEMP/windows-diagnostics/phases.jsonl"
+          "Cache hit: $env:CACHE_HIT (treatment: suppressed)" >> $env:GITHUB_STEP_SUMMARY
+      - name: Cargo format
+        run: ./scripts/windows-diagnostics.ps1 -Mode Run -Phase format -CargoArguments @('fmt', '--all', '--', '--check')
+      - name: Read selected files before building
+        run: ./scripts/windows-preread.ps1 -Treatment '${{ matrix.treatment }}'
+      - name: First forced rebuild
+        run: ./scripts/windows-repeat-rebuild.ps1 -Phase test-first
+      - name: Second forced rebuild on the same runner
+        run: ./scripts/windows-repeat-rebuild.ps1 -Phase test-second
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-2cpu-reads-${{ matrix.treatment }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/windows-diagnostics/
+          include-hidden-files: true
+          retention-days: 7
+          if-no-files-found: warn
