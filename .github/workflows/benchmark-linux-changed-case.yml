@@ -1,0 +1,160 @@
+name: Linux changed-source benchmark case
+
+on:
+  workflow_call:
+    inputs:
+      case:
+        required: true
+        type: string
+      cpu:
+        required: true
+        type: number
+      mode:
+        required: true
+        type: string
+      trial:
+        required: true
+        type: number
+
+permissions:
+  contents: read
+
+env:
+  CARGO_INCREMENTAL: 0
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+  RUST_FEATURES: rodio-backend,media-control,image,notify,fzf
+
+jobs:
+  benchmark:
+    name: ${{ inputs.case }} (${{ inputs.cpu }} CPU, ${{ inputs.mode }}, trial ${{ inputs.trial }})
+    timeout-minutes: 20
+    runs-on: ${{ startsWith(inputs.case, 'github-') && 'ubuntu-latest' || format('runs-on={0}-{1}-{2}-{3}/family={4}/image=ubuntu24-full-x64/ami={5}/spot=true/env=demo{6}', github.run_id, inputs.mode, inputs.case, inputs.trial, contains(inputs.case, 'm8idn') && (inputs.cpu == 2 && 'm8idn.large' || 'm8idn.xlarge') || (inputs.cpu == 2 && 'm8azn.large' || 'm8azn.xlarge'), inputs.case == 'runson-image' && 'ami-01c7c5c47275e795e' || 'ami-0c360acf17031b055', !endsWith(inputs.case, '-cold') && '/extras=s3-cache' || '') }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve Cargo home
+        id: cargo_home
+        run: |
+          echo "CARGO_HOME=$HOME/.cargo" >> "$GITHUB_ENV"
+          echo "path=$HOME/.cargo" >> "$GITHUB_OUTPUT"
+          echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
+      - uses: runs-on/action@v2
+        if: startsWith(inputs.case, 'runson-')
+      - name: Identify package snapshot
+        if: endsWith(inputs.case, '-cache')
+        id: apt_key
+        shell: bash
+        run: |
+          fingerprint=$({ cat /etc/os-release; dpkg-query -W; find /etc/apt -maxdepth 2 -type f \( -name '*.list' -o -name '*.sources' \) -print0 | sort -z | xargs -0 sha256sum; } | sha256sum | cut -d' ' -f1)
+          echo "key=ubuntu-packages-v1-${{ github.run_id }}-${{ inputs.cpu }}-${{ inputs.case }}-$fingerprint-${{ hashFiles('scripts/benchmark-ubuntu-packages.sh') }}" >> "$GITHUB_OUTPUT"
+      - name: Restore Ubuntu package snapshot
+        if: (endsWith(inputs.case, '-cache')) && inputs.mode == 'measure'
+        id: apt_cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/ubuntu-package-cache
+          key: ${{ steps.apt_key.outputs.key }}
+          fail-on-cache-miss: true
+      - name: Install Linux dependencies from package snapshot
+        if: endsWith(inputs.case, '-cache')
+        env:
+          SNAPSHOT_MODE: ${{ inputs.mode }}
+        run: bash scripts/benchmark-ubuntu-packages.sh "$SNAPSHOT_MODE"
+      - name: Save Ubuntu package snapshot
+        if: (endsWith(inputs.case, '-cache')) && inputs.mode == 'seed'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/ubuntu-package-cache
+          key: ${{ steps.apt_key.outputs.key }}
+      - name: Install Linux dependencies without cache
+        if: endsWith(inputs.case, '-cold')
+        run: sudo apt-get update && sudo apt-get install -y libssl-dev libasound2-dev libdbus-1-dev libxcb-shape0-dev libxcb-xfixes0-dev
+      - name: Install Rust toolchain
+        if: inputs.case != 'runson-image'
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: '1.98.1'
+          components: clippy, rustfmt
+      - name: Verify toolchain and packages
+        id: toolchain
+        env:
+          EXPECTED_CPUS: ${{ inputs.cpu }}
+        run: |
+          echo "Logical CPUs: $(nproc)"
+          test "$(nproc)" -eq "$EXPECTED_CPUS"
+          uname -a
+          cat /etc/os-release
+          rustup override set 1.98.1
+          rustc --version --verbose
+          test "$(rustc --version | cut -d' ' -f2)" = '1.98.1'
+          cargo fmt --version
+          cargo clippy --version
+          dpkg-query -W -f='${binary:Package} ${Status}\n' libssl-dev libasound2-dev libdbus-1-dev libxcb-shape0-dev libxcb-xfixes0-dev | tee /tmp/spotify-packages.txt
+          test "$(grep -c 'install ok installed' /tmp/spotify-packages.txt)" -eq 5
+          hash=$(rustc --version --verbose | sed -n 's/^commit-hash: //p')
+          date=$(rustc --version --verbose | sed -n 's/^commit-date: //p' | tr -d '-')
+          echo "cachekey=${date}${hash:0:4}" >> "$GITHUB_OUTPUT"
+      - name: Restore benchmark cache
+        if: ${{ !endsWith(inputs.case, '-cold') }}
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ${{ steps.cargo_home.outputs.path }}/registry/index/
+            ${{ steps.cargo_home.outputs.path }}/registry/cache/
+            ${{ steps.cargo_home.outputs.path }}/git/db/
+            target/
+          key: linux-sourcechange-v1-${{ github.run_id }}-${{ inputs.cpu }}cpu-${{ inputs.case }}-rustc-${{ steps.toolchain.outputs.cachekey }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          fail-on-cache-miss: ${{ inputs.mode == 'measure' }}
+      - name: Apply and verify measured source change
+        if: inputs.mode == 'measure'
+        run: |
+          git apply --check scripts/benchmark-source-change.patch
+          git apply scripts/benchmark-source-change.patch
+          git diff --check
+          git diff --exit-code -- Cargo.lock Cargo.toml spotify_player/Cargo.toml
+          test "$(git diff --name-only)" = 'spotify_player/src/utils.rs'
+          sha256sum spotify_player/src/utils.rs Cargo.lock
+          git diff --stat
+      - name: Record workspace storage
+        run: |
+          mkdir -p target
+          findmnt -T "$PWD"
+          findmnt -T "$HOME/.cargo"
+          findmnt -T target
+          lsblk -o NAME,TYPE,SIZE,MODEL,MOUNTPOINTS
+      - name: Cargo format
+        run: cargo fmt --all -- --check
+      - name: Cargo test
+        env:
+          BENCHMARK_MODE: ${{ inputs.mode }}
+        run: |
+          cargo test --locked --no-default-features --features ${{ env.RUST_FEATURES }} --timings 2>&1 | tee "$RUNNER_TEMP/source-change-test.log"
+          if [ "$BENCHMARK_MODE" = measure ]; then
+            grep -F 'benchmark_duration_tests::negative_duration_is_clamped_to_zero ... ok' "$RUNNER_TEMP/source-change-test.log"
+            grep -E 'Compiling.*spotify_player' "$RUNNER_TEMP/source-change-test.log"
+          fi
+      - name: Cargo clippy with benchmark features
+        run: cargo clippy --locked --no-default-features --features ${{ env.RUST_FEATURES }} -- -D warnings
+      - name: Cargo clippy without features
+        run: cargo clippy --locked --no-default-features -- -D warnings
+      - name: Save initial dependency cache
+        if: success() && inputs.mode == 'seed' && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            ${{ steps.cargo_home.outputs.path }}/registry/index/
+            ${{ steps.cargo_home.outputs.path }}/registry/cache/
+            ${{ steps.cargo_home.outputs.path }}/git/db/
+            target/
+          key: ${{ steps.cache.outputs.cache-primary-key }}
+      - name: Record image and cache
+        if: always()
+        env:
+          IMAGE: ${{ inputs.case }}
+          CACHE_HIT: ${{ steps.cache.outputs.cache-hit }}
+        run: |
+          echo "Image: $IMAGE; cache hit: $CACHE_HIT" >> "$GITHUB_STEP_SUMMARY"
+          if [ -f /usr/local/share/spotify-ci/image-manifest.txt ]; then
+            cat /usr/local/share/spotify-ci/image-manifest.txt >> "$GITHUB_STEP_SUMMARY"
+          fi
