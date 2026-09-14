@@ -12,7 +12,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [github-cache, runson-cache, runson-ondemand-cache, runson-m8idn-cache]
+        case: [github-cache, runson-cache, runson-ondemand-cache]
     uses: ./.github/workflows/benchmark-linux-rust-cache-case.yml
     with:
       case: ${{ matrix.case }}
@@ -26,7 +26,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        case: [github-cold, runson-cold, runson-ondemand-cold, runson-m8idn-cold, github-cache, runson-cache, runson-ondemand-cache, runson-m8idn-cache]
+        case: [github-cold, runson-cold, runson-ondemand-cold, github-cache, runson-cache, runson-ondemand-cache]
         trial: [1, 2, 3]
     uses: ./.github/workflows/benchmark-linux-rust-cache-case.yml
     with:

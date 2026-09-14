@@ -29,9 +29,19 @@ jobs:
   benchmark:
     name: ${{ inputs.case }} (${{ inputs.cpu }} CPU, ${{ inputs.mode }}, trial ${{ inputs.trial }})
     timeout-minutes: 20
-    runs-on: ${{ startsWith(inputs.case, 'github-') && 'ubuntu-latest' || format('runs-on={0}-{1}-{2}-{3}/family={4}/image=ubuntu24-full-x64/ami={5}/spot={7}/env=demo{6}', github.run_id, inputs.mode, inputs.case, inputs.trial, contains(inputs.case, 'm8idn') && (inputs.cpu == 2 && 'm8idn.large' || 'm8idn.xlarge') || (inputs.cpu == 2 && 'm8azn.large' || 'm8azn.xlarge'), inputs.case == 'runson-image' && 'ami-01c7c5c47275e795e' || 'ami-0c360acf17031b055', !endsWith(inputs.case, '-cold') && '/extras=s3-cache' || '', contains(inputs.case, 'ondemand') && 'false' || 'true') }}
+    runs-on: ${{ startsWith(inputs.case, 'github-') && 'ubuntu-latest' || format('runs-on={0}-{1}-{2}-{3}/family={4}/image=ubuntu24-full-x64/ami={5}/spot={7}/env=demo{6}', github.run_id, inputs.mode, inputs.case, inputs.trial, inputs.cpu == 2 && 'm8azn.large' || 'm8azn.xlarge', inputs.case == 'runson-image' && 'ami-01c7c5c47275e795e' || 'ami-0c360acf17031b055', !endsWith(inputs.case, '-cold') && '/extras=s3-cache' || '', contains(inputs.case, 'ondemand') && 'false' || 'true') }}
     steps:
       - uses: actions/checkout@v4
+      - name: Record CPU model
+        run: |
+          lscpu
+          grep -m1 'model name' /proc/cpuinfo
+          {
+            echo '### CPU details'
+            echo '```text'
+            lscpu
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
       - name: Resolve Cargo home
         id: cargo_home
         run: |
